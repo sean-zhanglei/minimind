@@ -27,10 +27,19 @@ class PretrainConfig:
     learning_rate: float = 5e-4
     device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype: str = "bfloat16"
-    use_wandb: bool = False
-    wandb_project: str = "MiniMind-Pretrain"
+    use_tensorboard: bool = True
+    tensorboard_log_dir: str = "./logs/tensorboard"
     num_workers: int = 1
-    ddp: bool = False
+    base_seed: int = 1337
+    
+    ddp: bool = True
+    world_size: int = 4
+    rank: int = 0
+    local_rank: int = 0
+    local_world_size: int = 4
+    master_addr: str = "localhost"
+    master_port: str = "12345"
+    
     accumulation_steps: int = 8
     grad_clip: float = 1.0
     warmup_iters: int = 0
@@ -55,9 +64,8 @@ class PretrainTrainer:
     def __init__(self, config: PretrainConfig):
         self.config = config
         self.logger = PretrainLogger(config.ddp, getattr(config, 'local_rank', 0))
-        self.wandb = None
         self._setup()
-        self._init_wandb()
+        self._init_tensorboard()
     
     def _setup(self):
         """Initialize training components"""
@@ -66,35 +74,43 @@ class PretrainTrainer:
         self._setup_data()
         self._setup_optimizer()
 
-    def _init_wandb(self):
-        """Initialize Weights & Biases logging"""
-        if not self.config.use_wandb or (self.config.ddp and dist.get_rank() != 0):
+    def _init_tensorboard(self):
+        """Initialize TensorBoard logging"""
+        if not self.config.use_tensorboard or (self.config.ddp and dist.get_rank() != 0):
             return
             
         try:
-            import wandb
-            wandb.init(
-                project=self.config.wandb_project,
-                name=f"MiniMind-Pretrain-dim{self.lm_config.dim}-lr{self.config.learning_rate}",
-                config={
-                    "model": self.lm_config.__dict__,
-                    "training": {
-                        "batch_size": self.config.batch_size,
-                        "learning_rate": self.config.learning_rate,
-                        "epochs": self.config.epochs,
-                        "warmup_iters": self.config.warmup_iters,
-                        "grad_clip": self.config.grad_clip
-                    }
-                }
+            from torch.utils.tensorboard import SummaryWriter
+            os.makedirs(self.config.tensorboard_log_dir, exist_ok=True)
+            self.writer = SummaryWriter(log_dir=self.config.tensorboard_log_dir)
+            
+            # Log model architecture and hyperparameters
+            self.writer.add_text(
+                "model_config", 
+                str(self.lm_config.__dict__)
             )
-            self.wandb = wandb
-            self.wandb.watch(self.model, log="all", log_freq=self.config.log_interval)
+            self.writer.add_text(
+                "training_config",
+                str({
+                    "batch_size": self.config.batch_size,
+                    "learning_rate": self.config.learning_rate,
+                    "epochs": self.config.epochs,
+                    "warmup_iters": self.config.warmup_iters,
+                    "grad_clip": self.config.grad_clip
+                })
+            )
+            self.writer.add_graph(
+                self.model,
+            )
         except ImportError:
-            self.logger.log("wandb not installed, skipping initialization", "WARNING")
+            self.logger.log("tensorboard not installed, skipping initialization", "WARNING")
         
     def _setup_device(self):
         self.logger.log("_setup_device Configure device and distributed training...")
       
+        torch.manual_seed(self.config.base_seed)
+        torch.cuda.manual_seed(self.config.base_seed)
+    
         if self.config.ddp:
             self._init_distributed()
         
@@ -104,10 +120,47 @@ class PretrainTrainer:
     def _init_distributed(self):
         self.logger.log("_init_distributed Initialize distributed training...")
         
-        dist.init_process_group(backend="nccl")
-        self.config.local_rank = int(os.environ["LOCAL_RANK"])
-        self.config.device = f"cuda:{self.config.local_rank}"
-        torch.cuda.set_device(self.config.device)
+        # 假设所有进程数即 world_size 为W，每个节点上的进程数即 local_world_size 为L，则每个进程上的两个ID：
+        # rank的取值范围：[0, W-1]，rank=0 的进程为主进程，会负责一些同步分发的工作
+        # local_rank的取值：[0, L-1]
+        
+        self.config.master_addr = str(self.config.master_addr)
+        os.environ["MASTER_ADDR"] = self.config.master_addr
+        
+        self.config.master_port = str(self.config.master_port)
+        os.environ["MASTER_PORT"] = self.config.master_port
+        
+        self.config.rank = int(os.environ['RANK'])
+        
+        self.config.world_size = int(os.environ['WORLD_SIZE'])
+        
+        self.config.local_rank = int(os.environ['LOCAL_RANK'])
+        
+        self.config.local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
+        
+        self.logger.log(f"Distributed training initialized: rank={self.config.rank}, world_size={self.config.world_size}, local_rank={self.config.local_rank}, local_world_size={self.config.local_world_size}")
+        
+        # ps 检查nccl是否可用
+        if torch.distributed.is_nccl_available ():
+            # GPU训练
+        
+            dist.init_process_group(backend="nccl")
+            self.config.device = f"cuda:{self.config.local_rank}"
+            torch.cuda.set_device(self.config.device)
+            
+            rank = dist.get_rank()
+            torch.manual_seed(self.config.base_seed + rank)
+            # 同时设置 CUDA 的随机种子
+            torch.cuda.manual_seed(self.config.base_seed + rank)
+        else:
+            # CPU训练
+            dist.init_process_group(backend="gloo")
+            self.config.device = "cpu"
+            torch.set_default_device(self.config.device)
+            
+            rank = dist.get_rank()
+            torch.manual_seed(self.config.base_seed + rank)
+        
     
     def _setup_model(self):
         self.logger.log("_setup_model Initialize model and tokenizer...")
@@ -129,7 +182,13 @@ class PretrainTrainer:
         
         if self.config.ddp:
             self.model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
-            self.model = DistributedDataParallel(self.model, device_ids=[self.config.local_rank])
+            # ps 检查nccl是否可用
+            if torch.distributed.is_nccl_available ():
+                # GPU训练
+                self.model = DistributedDataParallel(self.model, device_ids=[self.config.local_rank])
+            else:
+                # CPU训练
+                self.model = DistributedDataParallel(self.model)
     
     def _setup_data(self):
         self.logger.log("_setup_data Initialize data loading components...")
@@ -225,12 +284,12 @@ class PretrainTrainer:
                 self._train_epoch(epoch)
             
             self.logger.log("Training completed successfully!", "SUCCESS")
-            if self.wandb:
-                self.wandb.finish()
+            if hasattr(self, 'writer'):
+                self.writer.close()
         except Exception as e:
             self.logger.log(f"Training failed: {str(e)}", "ERROR")
-            if self.wandb:
-                self.wandb.finish()
+            if hasattr(self, 'writer'):
+                self.writer.close()
             raise
     
     def _train_epoch(self, epoch: int):
@@ -279,8 +338,25 @@ class PretrainTrainer:
                     f"LR:{lr:.2e} "
                     f"Time:{spend_time//60:.0f}m{spend_time%60:.0f}s"
                 )
-                if self.wandb:
-                    self.wandb.log(log_data)
+                if hasattr(self, 'writer'):
+                    for key, value in log_data.items():
+                        self.writer.add_scalar(key, value, current_step)
+                    
+                    # Log parameter distributions periodically
+                    if current_step % 100 == 0:
+                        for name, param in self.model.named_parameters():
+                            if 'weight' in name and ('attention' in name or 'feed_forward' in name):
+                                self.writer.add_histogram(
+                                    f'weights/{name.replace(".", "/")}',
+                                    param.data,
+                                    current_step
+                                )
+                                if param.grad is not None:
+                                    self.writer.add_histogram(
+                                        f'gradients/{name.replace(".", "/")}',
+                                        param.grad.data,
+                                        current_step
+                                    )
             
             # Checkpoint saving
             if (step + 1) % self.config.save_interval == 0:
