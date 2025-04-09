@@ -184,10 +184,12 @@ class PretrainTrainer:
             self.model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
             # ps 检查nccl是否可用
             if torch.distributed.is_nccl_available ():
+                self.logger.log("Using GPU for training with DDP...")
                 # GPU训练
                 self.model = DistributedDataParallel(self.model, device_ids=[self.config.local_rank])
             else:
                 # CPU训练
+                self.logger.log("Using CPU for training with DDP...")
                 self.model = DistributedDataParallel(self.model)
     
     def _setup_data(self):
