@@ -99,6 +99,7 @@ class PretrainTrainer:
             self._init_distributed()
         
         self.device_type = "cuda" if "cuda" in self.config.device else "cpu"
+        self.logger.log(f"training with...device_type:{self.device_type}")
         if(self.device_type == "cuda"):
              self.logger.log("Using GPU for training with...")
         self.ctx = nullcontext() if self.device_type == "cpu" else torch.cuda.amp.autocast()
@@ -237,7 +238,7 @@ class PretrainTrainer:
             raise
     
     def _train_epoch(self, epoch: int):
-        self.logger.log("_train_epoch Train one epoch...epoch:{epoch}")
+        self.logger.log(f"_train_epoch Train one epoch...epoch:{epoch}")
         
         self.model.train()
         start_time = time.time()
