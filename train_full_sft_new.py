@@ -28,7 +28,7 @@ class TrainerConfig:
         self.out_dir = "out"
         self.epochs = 1
         # self.batch_size = 32
-        self.batch_size = 64 * 2
+        self.batch_size = 32 * 2
         self.learning_rate = 5e-5
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.dtype = "bfloat16"
@@ -174,6 +174,7 @@ class Trainer:
         ctx = nullcontext() if "cpu" in self.config.device else torch.cuda.amp.autocast()
 
         for step, (X, Y, loss_mask) in enumerate(self.train_loader):
+            self.utils.log(f"dsdssd,step:{step}")
             X = X.to(self.config.device)
             Y = Y.to(self.config.device)
             loss_mask = loss_mask.to(self.config.device)
@@ -206,7 +207,7 @@ class Trainer:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
 
-            if step % self.config.log_interval == 0:
+            if step % self.config.save_interval == 0:
                 spend_time = time.time() - start_time
                 self.utils.log(
                     'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} epoch_Time:{}min:'.format(
@@ -250,7 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default="out")
     parser.add_argument("--epochs", type=int, default=1)
     # parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--batch_size", type=int, default=64 * 2)
+    parser.add_argument("--batch_size", type=int, default=32 * 2)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
