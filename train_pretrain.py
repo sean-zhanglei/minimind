@@ -180,8 +180,9 @@ class PretrainTrainer:
         progress = (current_step - warmup_steps) / (total_steps - warmup_steps)
         return self.config.learning_rate * (0.1 + 0.5 * (1 + math.cos(math.pi * progress)))
     
-    def _forward_pass(self, batch) -> torch.Tensor:
-        self.logger.log("_forward_pass Perform forward pass and compute loss...")
+    def _forward_pass(self, step: int, batch) -> torch.Tensor:
+        if step % self.config.log_interval == 0:
+            self.logger.log(f"_forward_pass Perform forward pass and compute loss...step:{step},batch:{batch}")
         
         X, Y, loss_mask = batch
         X = X.to(self.config.device)
@@ -247,7 +248,7 @@ class PretrainTrainer:
         
         for step, batch in enumerate(self.train_loader):
             # Forward pass and backward
-            loss = self._forward_pass(batch)
+            loss = self._forward_pass(step, batch)
             self.scaler.scale(loss).backward()
             
             # Gradient accumulation and update
