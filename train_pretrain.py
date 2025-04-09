@@ -99,6 +99,8 @@ class PretrainTrainer:
             self._init_distributed()
         
         self.device_type = "cuda" if "cuda" in self.config.device else "cpu"
+        if(self.device_type == "cuda"):
+             self.logger.log("Using GPU for training with...")
         self.ctx = nullcontext() if self.device_type == "cpu" else torch.cuda.amp.autocast()
     
     def _init_distributed(self):
