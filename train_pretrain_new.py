@@ -263,6 +263,7 @@ class PretrainTrainer:
         self.model.eval()
         try:
             moe_path = '_moe' if self.lm_config.use_moe else ''
+            os.makedirs(self.config.out_dir, exist_ok=True)
             ckp_path = f'{self.config.out_dir}/pretrain_{self.lm_config.dim}{moe_path}.pth'
             
             state_dict = (
