@@ -180,7 +180,7 @@ class PretrainTrainer:
         return self.config.learning_rate * (0.1 + 0.5 * (1 + math.cos(math.pi * progress)))
     
     def _forward_pass(self, batch) -> torch.Tensor:
-        self.logger.log(f"_forward_pass Perform forward pass and compute loss...batch:{batch}")
+        self.logger.log(f"_forward_pass Perform forward pass and compute loss...")
         
         X, Y, loss_mask = batch
         X = X.to(self.config.device)
