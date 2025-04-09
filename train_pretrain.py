@@ -168,7 +168,8 @@ class PretrainTrainer:
         )
     
     def _get_lr(self, current_step: int) -> float:
-        self.logger.log(f"_get_lr Calculate learning rate with warmup...current_step:{current_step}")
+        if current_step % self.config.log_interval == 0:
+            self.logger.log(f"_get_lr Calculate learning rate with warmup...current_step:{current_step}")
         
         total_steps = self.config.epochs * self.iter_per_epoch
         warmup_steps = self.config.warmup_iters
@@ -180,7 +181,7 @@ class PretrainTrainer:
         return self.config.learning_rate * (0.1 + 0.5 * (1 + math.cos(math.pi * progress)))
     
     def _forward_pass(self, batch) -> torch.Tensor:
-        self.logger.log(f"_forward_pass Perform forward pass and compute loss...")
+        self.logger.log("_forward_pass Perform forward pass and compute loss...")
         
         X, Y, loss_mask = batch
         X = X.to(self.config.device)
