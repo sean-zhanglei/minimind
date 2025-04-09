@@ -24,7 +24,8 @@ class PretrainConfig:
     out_dir: str = "out"
     epochs: int = 1
     # batch_size: int = 32
-    batch_size: int = 64
+    # batch_size: int = 32 * 64
+    batch_size: int = 64 * 2
     learning_rate: float = 5e-4
     device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype: str = "bfloat16"
