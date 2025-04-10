@@ -34,7 +34,6 @@ class TrainerConfig:
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.dtype = "bfloat16"
         self.use_tensorboard = True
-        self.num_workers = 1
         self.ddp = True
         self.accumulation_steps = 1
         self.grad_clip = 1.0
@@ -135,16 +134,26 @@ class Trainer:
             os.makedirs(log_dir, exist_ok=True)
             self.writer = SummaryWriter(log_dir=log_dir)
 
+    def _check_ddp_ready(self):
+        """检查DDP环境是否就绪"""
+        return (
+            torch.distributed.is_initialized() and 
+            torch.cuda.device_count() > 1 and
+            "LOCAL_RANK" in os.environ
+        )
+    
     def prepare_training(self):
         os.makedirs(self.config.out_dir, exist_ok=True)
         base_seed = 1337
         torch.manual_seed(base_seed)
         torch.cuda.manual_seed(base_seed)
 
-        if self.ddp:
+        if self.ddp and self._check_ddp_ready():
             rank = dist.get_rank()
             torch.manual_seed(base_seed + rank)
             torch.cuda.manual_seed(base_seed + rank)
+        else:
+            self.ddp = False
 
         model, tokenizer = self.model_manager.init_model()
         
@@ -190,13 +199,14 @@ class Trainer:
             Y = Y.to(self.config.device)
             loss_mask = loss_mask.to(self.config.device)
             
-            # 记录输入数据形状和大小
-            self.utils.log(
-                f"Forward pass - Batch size: {X.size(0)}, "
-                f"Sequence length: {X.size(1)}, "
-                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
-                self.ddp
-            )
+            if step % self.config.log_interval == 0:
+                # 记录输入数据形状和大小
+                self.utils.log(
+                    f"Forward pass - Batch size: {X.size(0)}, "
+                    f"Sequence length: {X.size(1)}, "
+                    f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
+                    self.ddp
+                )
             
             lr = self.utils.get_lr(
                 epoch * self.iter_per_epoch + step,
@@ -212,12 +222,13 @@ class Trainer:
                 res = model(X)
                 forward_time = time.time() - forward_start
                 
-                # 记录前向传播耗时和输出形状
-                self.utils.log(
-                    f"Forward pass completed - Time: {forward_time:.4f}s, "
-                    f"Logits shape: {res.logits.shape if hasattr(res, 'logits') else 'N/A'}",
-                    self.ddp
-                )
+                if step % self.config.log_interval == 0:
+                    # 记录前向传播耗时和输出形状
+                    self.utils.log(
+                        f"Forward pass completed - Time: {forward_time:.4f}s, "
+                        f"Logits shape: {res.logits.shape if hasattr(res, 'logits') else 'N/A'}",
+                        self.ddp
+                    )
                 loss = loss_fct(
                     res.logits.view(-1, res.logits.size(-1)),
                     Y.view(-1)
@@ -269,44 +280,29 @@ class Trainer:
                 model.train()
 
     def train(self):
-        self.ddp = int(os.environ.get("RANK", -1)) != -1
-        if self.ddp:
-            self.init_distributed_mode()
+        self.utils.log("train starting Main training loop...")
+        try:
+            if self.ddp:
+                self.init_distributed_mode()
 
-        if self.config.use_tensorboard:
-            self.init_tensorboard()
-            
-        model = self.prepare_training()
+            if self.config.use_tensorboard:
+                self.init_tensorboard()
+                
+            model = self.prepare_training()
 
-        for epoch in range(self.config.epochs):
-            self.train_epoch(epoch, model)
-
+            for epoch in range(self.config.epochs):
+                self.train_epoch(epoch, model)
+                
+            self.utils.log("Training completed successfully!", "SUCCESS")
+            if hasattr(self, 'writer'):
+                self.writer.close()
+        except Exception as e:
+            self.utils.log(f"Training failed: {str(e)}", "ERROR")
+            if hasattr(self, 'writer'):
+                self.writer.close()
+            raise
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MiniMind Full SFT")
-    parser.add_argument("--out_dir", type=str, default="out")
-    parser.add_argument("--epochs", type=int, default=1)
-    # parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--batch_size", type=int, default=32 * 2)
-    parser.add_argument("--learning_rate", type=float, default=5e-5)
-    parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--dtype", type=str, default="bfloat16")
-    parser.add_argument("--use_tensorboard", action="store_true")
-    parser.add_argument("--num_workers", type=int, default=1)
-    parser.add_argument("--ddp", action="store_true")
-    parser.add_argument("--accumulation_steps", type=int, default=1)
-    parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--warmup_iters", type=int, default=0)
-    parser.add_argument("--log_interval", type=int, default=100)
-    parser.add_argument("--save_interval", type=int, default=100)
-    parser.add_argument('--local_rank', type=int, default=-1)
-    parser.add_argument('--dim', default=512, type=int)
-    parser.add_argument('--n_layers', default=8, type=int)
-    parser.add_argument('--max_seq_len', default=512, type=int)
-    parser.add_argument('--use_moe', default=False, type=bool)
-    parser.add_argument("--data_path", type=str, default="./dataset/sft_mini_512.jsonl")
-
-    args = parser.parse_args()
-    config = TrainerConfig.from_args(args)
+    config = TrainerConfig()
     trainer = Trainer(config)
     trainer.train()

@@ -21,35 +21,32 @@ warnings.filterwarnings('ignore')
 
 @dataclass
 class PretrainConfig:
-    out_dir: str = "out"
-    epochs: int = 1
-    batch_size: int = 32
-    learning_rate: float = 5e-4
-    device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
-    dtype: str = "bfloat16"
-    use_tensorboard: bool = True
-    tensorboard_log_dir: str = "./logs/tensorboard"
-    num_workers: int = 1
-    base_seed: int = 1337
+    out_dir: str = "out"  # 模型输出目录
+    epochs: int = 1  # 训练总轮数
+    # batch_size: int = 32
+    batch_size: int = 32 * 2  # 每个batch的样本数
+    learning_rate: float = 5e-4  # 初始学习率
+    device: str = "cuda:0" if torch.cuda.is_available() else "cpu"  # 训练设备
+    dtype: str = "bfloat16"  # 训练精度
+    use_tensorboard: bool = True  # 是否使用TensorBoard记录
+    tensorboard_log_dir: str = "./logs/tensorboard"  # TensorBoard日志目录
+    base_seed: int = 1337  # 随机种子
     
-    ddp: bool = True
-    world_size: int = 4
-    rank: int = 0
-    local_rank: int = 0
-    local_world_size: int = 4
-    master_addr: str = "localhost"
-    master_port: str = "12345"
+    ddp: bool = True  # 是否启用分布式数据并行训练
+    world_size: int = 4  # 分布式训练中的总进程数
+    rank: int = 0  # 当前进程的全局排名(0到world_size-1)
+    local_rank: int = 0  # 当前节点上的进程本地排名
     
-    accumulation_steps: int = 8
-    grad_clip: float = 1.0
-    warmup_iters: int = 0
-    log_interval: int = 100
-    save_interval: int = 100
-    dim: int = 512
-    n_layers: int = 8
-    max_seq_len: int = 512
-    use_moe: bool = False
-    data_path: str = "./dataset/pretrain_hq.jsonl"
+    accumulation_steps: int = 8  # 梯度累积步数
+    grad_clip: float = 1.0  # 梯度裁剪阈值
+    warmup_iters: int = 0  # 学习率warmup步数
+    log_interval: int = 100  # 日志记录间隔(step)
+    save_interval: int = 100  # 模型保存间隔(step)
+    dim: int = 512  # 模型隐藏层维度
+    n_layers: int = 8  # 模型层数
+    max_seq_len: int = 512  # 最大序列长度
+    use_moe: bool = False  # 是否使用混合专家(MoE)结构
+    data_path: str = "./dataset/pretrain_hq.jsonl"  # 训练数据路径
 
 class PretrainLogger:
     def __init__(self, ddp: bool = False, rank: int = 0):
@@ -68,14 +65,12 @@ class PretrainTrainer:
         self._init_tensorboard()
     
     def _setup(self):
-        """Initialize training components"""
         self._setup_device()
         self._setup_model()
         self._setup_data()
         self._setup_optimizer()
 
     def _init_tensorboard(self):
-        """Initialize TensorBoard logging"""
         if not self.config.use_tensorboard or (self.config.ddp and dist.get_rank() != 0):
             return
             
@@ -99,9 +94,6 @@ class PretrainTrainer:
                     "grad_clip": self.config.grad_clip
                 })
             )
-            self.writer.add_graph(
-                self.model,
-            )
         except ImportError:
             self.logger.log("tensorboard not installed, skipping initialization", "WARNING")
         
@@ -111,9 +103,15 @@ class PretrainTrainer:
         torch.manual_seed(self.config.base_seed)
         torch.cuda.manual_seed(self.config.base_seed)
     
-        if self.config.ddp:
+        if self.config.ddp and self._check_ddp_ready():
+            rank = dist.get_rank()
+            torch.manual_seed(self.config.base_seed + rank)
+            torch.cuda.manual_seed(self.config.base_seed + rank)
             self._init_distributed()
-        
+        else:
+            self.config.ddp = False
+            self.logger.log("DDP not ready, using single GPU training") 
+            
         self.logger.log(f"training with...device:{self.config.device}")
         self.config.device_type = "cuda" if "cuda" in self.config.device else "cpu"
         self.logger.log(f"training with...device_type:{self.config.device_type}")
@@ -121,50 +119,21 @@ class PretrainTrainer:
              self.logger.log("Using GPU for training with...")
         self.ctx = nullcontext() if self.config.device_type == "cpu" else torch.cuda.amp.autocast()
     
+    def _check_ddp_ready(self):
+        """检查DDP环境是否就绪"""
+        return (
+            torch.distributed.is_initialized() and 
+            torch.cuda.device_count() > 1 and
+            "LOCAL_RANK" in os.environ
+        )
+    
     def _init_distributed(self):
         self.logger.log("_init_distributed Initialize distributed training...")
         
-        # 假设所有进程数即 world_size 为W，每个节点上的进程数即 local_world_size 为L，则每个进程上的两个ID：
-        # rank的取值范围：[0, W-1]，rank=0 的进程为主进程，会负责一些同步分发的工作
-        # local_rank的取值：[0, L-1]
-        
-        self.config.master_addr = str(self.config.master_addr)
-        os.environ["MASTER_ADDR"] = self.config.master_addr
-        
-        self.config.master_port = str(self.config.master_port)
-        os.environ["MASTER_PORT"] = self.config.master_port
-        
-        self.config.rank = int(os.environ['RANK'])
-        
-        self.config.world_size = int(os.environ['WORLD_SIZE'])
-        
-        self.config.local_rank = int(os.environ['LOCAL_RANK'])
-        
-        self.config.local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
-        
-        self.logger.log(f"Distributed training initialized: rank={self.config.rank}, world_size={self.config.world_size}, local_rank={self.config.local_rank}, local_world_size={self.config.local_world_size}")
-        
-        # ps 检查nccl是否可用
-        if torch.distributed.is_nccl_available ():
-            # GPU训练
-        
-            dist.init_process_group(backend="nccl")
-            self.config.device = f"cuda:{self.config.local_rank}"
-            torch.cuda.set_device(self.config.device)
-            
-            rank = dist.get_rank()
-            torch.manual_seed(self.config.base_seed + rank)
-            # 同时设置 CUDA 的随机种子
-            torch.cuda.manual_seed(self.config.base_seed + rank)
-        else:
-            # CPU训练
-            dist.init_process_group(backend="gloo")
-            self.config.device = "cpu"
-            torch.set_default_device(self.config.device)
-            
-            rank = dist.get_rank()
-            torch.manual_seed(self.config.base_seed + rank)
-        
+        dist.init_process_group(backend="nccl")
+        self.config.local_rank = int(os.environ["LOCAL_RANK"])
+        self.config.device = f"cuda:{self.config.local_rank}"
+        torch.cuda.set_device(self.config.device)
     
     def _setup_model(self):
         self.logger.log("_setup_model Initialize model and tokenizer...")
@@ -186,15 +155,10 @@ class PretrainTrainer:
         
         if self.config.ddp:
             self.model._ddp_params_and_buffers_to_ignore = {"pos_cis"}
-            # ps 检查nccl是否可用
-            if torch.distributed.is_nccl_available ():
-                self.logger.log("Using GPU for training with DDP...")
-                # GPU训练
-                self.model = DistributedDataParallel(self.model, device_ids=[self.config.local_rank])
-            else:
-                # CPU训练
-                self.logger.log("Using CPU for training with DDP...")
-                self.model = DistributedDataParallel(self.model)
+            self.model = DistributedDataParallel(
+                self.model, 
+                device_ids=[self.config.local_rank]
+            )
     
     def _setup_data(self):
         self.logger.log("_setup_data Initialize data loading components...")
@@ -206,14 +170,16 @@ class PretrainTrainer:
         )
         
         train_sampler = DistributedSampler(train_ds) if self.config.ddp else None
+        
         self.train_loader = DataLoader(
             train_ds,
             batch_size=self.config.batch_size,
-            pin_memory=True,
+            pin_memory=True,  # 启用内存锁定
             drop_last=False,
-            shuffle=False,
-            num_workers=self.config.num_workers,
-            sampler=train_sampler
+            shuffle=(train_sampler is None),  # 非分布式时启用shuffle
+            num_workers=min(4, os.cpu_count()),  # 自动设置worker数量
+            sampler=train_sampler,
+            persistent_workers=True  # 保持worker进程
         )
         self.iter_per_epoch = len(self.train_loader)
     
@@ -229,7 +195,6 @@ class PretrainTrainer:
         )
     
     def _get_lr(self, current_step: int) -> float:
-        self.logger.log(f"_get_lr Calculate learning rate with warmup...current_step:{current_step}")
         
         total_steps = self.config.epochs * self.iter_per_epoch
         warmup_steps = self.config.warmup_iters
@@ -240,10 +205,17 @@ class PretrainTrainer:
         progress = (current_step - warmup_steps) / (total_steps - warmup_steps)
         return self.config.learning_rate * (0.1 + 0.5 * (1 + math.cos(math.pi * progress)))
     
-    def _forward_pass(self, batch) -> torch.Tensor:
-        self.logger.log(f"_forward_pass Perform forward pass and compute loss...batch:{batch}")
-        
+    def _forward_pass(self, step, batch) -> torch.Tensor:
         X, Y, loss_mask = batch
+        if step % self.config.log_interval == 0:
+            # 记录输入数据形状和大小
+            self.logger.log(
+                f"Forward pass - Batch size: {X.size(0)}, "
+                f"Sequence length: {X.size(1)}, "
+                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
+                self.config.ddp
+            )
+        
         X = X.to(self.config.device)
         Y = Y.to(self.config.device)
         loss_mask = loss_mask.to(self.config.device)
@@ -258,8 +230,8 @@ class PretrainTrainer:
             loss += res.aux_loss
             return loss / self.config.accumulation_steps
     
-    def _save_checkpoint(self, epoch: int, step: int, loss: torch.Tensor):
-        self.logger.log(f"_save_checkpoint Save model checkpoint...epoch:{epoch}, step:{step}, loss:{loss}")
+    def _save_checkpoint(self, epoch: int, step: int):
+        self.logger.log(f"_save_checkpoint Save model checkpoint...epoch:{epoch + 1}, step:{step + 1}")
         
         if self.config.ddp and dist.get_rank() != 0:
             return
@@ -285,7 +257,6 @@ class PretrainTrainer:
     
     def train(self):
         self.logger.log("train starting Main training loop...")
-        
         try:
             for epoch in range(self.config.epochs):
                 self._train_epoch(epoch)
@@ -300,14 +271,14 @@ class PretrainTrainer:
             raise
     
     def _train_epoch(self, epoch: int):
-        self.logger.log("_train_epoch Train one epoch...times:" , epoch)
+        self.logger.log(f"_train_epoch Train one epoch:{epoch + 1}")
         
         self.model.train()
         start_time = time.time()
         
         for step, batch in enumerate(self.train_loader):
             # Forward pass and backward
-            loss = self._forward_pass(batch)
+            loss = self._forward_pass(step, batch)
             self.scaler.scale(loss).backward()
             
             # Gradient accumulation and update
@@ -338,12 +309,16 @@ class PretrainTrainer:
                     "time_per_step": spend_time / (step + 1),
                     "epoch_progress": step / self.iter_per_epoch
                 }
+                step_time = spend_time / (step + 1)
+                remaining_time = step_time * (self.iter_per_epoch - step - 1)
                 self.logger.log(
-                    f"Epoch:[{epoch+1}/{self.config.epochs}] "
-                    f"Step:[{step}/{self.iter_per_epoch}] "
+                    f"Epoch:[{epoch + 1}/{self.config.epochs}] "
+                    f"Step:[{step + 1}/{self.iter_per_epoch}] "
                     f"Loss:{log_data['loss']:.3f} "
                     f"LR:{lr:.2e} "
-                    f"Time:{spend_time//60:.0f}m{spend_time%60:.0f}s"
+                    f"Time:{spend_time//60:.0f}m{spend_time%60:.0f}s "
+                    f"StepTime:{step_time:.2f}s "
+                    f"Remaining_time:{remaining_time//60:.0f}m{remaining_time%60:.0f}s"
                 )
                 if hasattr(self, 'writer'):
                     for key, value in log_data.items():
@@ -367,7 +342,7 @@ class PretrainTrainer:
             
             # Checkpoint saving
             if (step + 1) % self.config.save_interval == 0:
-                self._save_checkpoint(epoch, step, loss)
+                self._save_checkpoint(epoch, step)
 
 if __name__ == "__main__":
     config = PretrainConfig()
