@@ -19,6 +19,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from model.model import MiniMindLM
 from model.LMConfig import LMConfig
 from model.dataset import SFTDataset
+from torchinfo import summary
 
 warnings.filterwarnings('ignore')
 
@@ -34,7 +35,7 @@ class TrainerConfig:
         self.dtype = "bfloat16"
         self.use_tensorboard = True
         self.num_workers = 1
-        self.ddp = False
+        self.ddp = True
         self.accumulation_steps = 1
         self.grad_clip = 1.0
         self.warmup_iters = 0
@@ -146,18 +147,24 @@ class Trainer:
             torch.cuda.manual_seed(base_seed + rank)
 
         model, tokenizer = self.model_manager.init_model()
+        
+        self.utils.log('LLM：网络结构')
+        summary(model)
+        
         self.utils.log(f'LLM总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
 
         train_ds = SFTDataset(self.config.data_path, tokenizer, max_length=self.model_manager.lm_config.max_seq_len)
         train_sampler = DistributedSampler(train_ds) if self.ddp else None
+        # 优化DataLoader配置
         self.train_loader = DataLoader(
             train_ds,
             batch_size=self.config.batch_size,
-            pin_memory=True,
+            pin_memory=True,  # 启用内存锁定
             drop_last=False,
-            shuffle=False,
-            num_workers=self.config.num_workers,
-            sampler=train_sampler
+            shuffle=(train_sampler is None),  # 非分布式时启用shuffle
+            num_workers=min(4, os.cpu_count()),  # 自动设置worker数量
+            sampler=train_sampler,
+            persistent_workers=True  # 保持worker进程
         )
         self.iter_per_epoch = len(self.train_loader)
 
@@ -168,16 +175,28 @@ class Trainer:
         return model
 
     def train_epoch(self, epoch, model):
+        # 初始化损失函数和优化器
         loss_fct = nn.CrossEntropyLoss(reduction='none')
         optimizer, scaler = self.model_manager.init_optimizer()
+        
+        # 记录训练开始时间和自动混合精度上下文
         start_time = time.time()
         ctx = nullcontext() if "cpu" in self.config.device else torch.cuda.amp.autocast()
 
+        # 遍历训练数据
         for step, (X, Y, loss_mask) in enumerate(self.train_loader):
-            self.utils.log(f"dsdssd,step:{step}")
+            # 将数据移动到指定设备并记录形状信息
             X = X.to(self.config.device)
             Y = Y.to(self.config.device)
             loss_mask = loss_mask.to(self.config.device)
+            
+            # 记录输入数据形状和大小
+            self.utils.log(
+                f"Forward pass - Batch size: {X.size(0)}, "
+                f"Sequence length: {X.size(1)}, "
+                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
+                self.ddp
+            )
             
             lr = self.utils.get_lr(
                 epoch * self.iter_per_epoch + step,
@@ -188,7 +207,17 @@ class Trainer:
                 param_group['lr'] = lr
 
             with ctx:
+                # 记录前向传播开始时间
+                forward_start = time.time()
                 res = model(X)
+                forward_time = time.time() - forward_start
+                
+                # 记录前向传播耗时和输出形状
+                self.utils.log(
+                    f"Forward pass completed - Time: {forward_time:.4f}s, "
+                    f"Logits shape: {res.logits.shape if hasattr(res, 'logits') else 'N/A'}",
+                    self.ddp
+                )
                 loss = loss_fct(
                     res.logits.view(-1, res.logits.size(-1)),
                     Y.view(-1)
@@ -207,23 +236,30 @@ class Trainer:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
 
-            if step % self.config.save_interval == 0:
+            if step % self.config.log_interval == 0:
                 spend_time = time.time() - start_time
+                avg_step_time = spend_time / (step + 1)
+                remaining_time = (self.iter_per_epoch - step - 1) * avg_step_time
+                step_min, step_sec = divmod(avg_step_time, 60)
+                remain_min, remain_sec = divmod(remaining_time, 60)
                 self.utils.log(
-                    'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} epoch_Time:{}min:'.format(
+                    'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} step_time:{}m{:.0f}s remain:{}m{:.0f}s'.format(
                         epoch + 1,
                         self.config.epochs,
                         step,
                         self.iter_per_epoch,
                         loss.item(),
                         optimizer.param_groups[-1]['lr'],
-                        spend_time / (step + 1) * self.iter_per_epoch // 60 - spend_time // 60),
+                        int(step_min), step_sec,
+                        int(remain_min), remain_sec),
                     self.ddp
                 )
 
                 if self.writer is not None:
                     self.writer.add_scalar('train/loss', loss.item(), epoch * self.iter_per_epoch + step)
                     self.writer.add_scalar('train/lr', optimizer.param_groups[-1]['lr'], epoch * self.iter_per_epoch + step)
+                    self.writer.add_scalar('train/step_time', avg_step_time, epoch * self.iter_per_epoch + step)
+                    self.writer.add_scalar('train/remaining_time', remaining_time, epoch * self.iter_per_epoch + step)
 
             if (step + 1) % self.config.save_interval == 0:
                 model.eval()
