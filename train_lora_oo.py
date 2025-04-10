@@ -193,6 +193,7 @@ class LoRATrainer:
             if (step + 1) % self.args.save_interval == 0 and (not self.args.ddp or dist.get_rank() == 0):
                 self.model_manager.model.eval()
                 save_path = f'{self.args.save_dir}/lora/{self.args.lora_name}_{self.args.lm_config.dim}.pth'
+                os.makedirs(self.args.save_dir + '/lora', exist_ok=True)
                 self.model_manager.save_lora(save_path)
                 self.model_manager.model.train()
 
