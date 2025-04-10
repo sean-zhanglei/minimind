@@ -245,7 +245,7 @@ class Trainer:
                     'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} step_time:{}m{:.0f}s remain:{}m{:.0f}s'.format(
                         epoch + 1,
                         self.config.epochs,
-                        step,
+                        step + 1,
                         self.iter_per_epoch,
                         loss.item(),
                         optimizer.param_groups[-1]['lr'],

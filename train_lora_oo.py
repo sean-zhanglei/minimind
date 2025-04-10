@@ -176,15 +176,22 @@ class LoRATrainer:
 
             if step % self.args.log_interval == 0:
                 spend_time = time.time() - start_time
+                avg_step_time = spend_time / (step + 1)
+                remaining_time = (self.iter_per_epoch - step - 1) * avg_step_time
+                step_min, step_sec = divmod(avg_step_time, 60)
+                remain_min, remain_sec = divmod(remaining_time, 60)
                 self.logger.log(
-                    'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} epoch_Time:{}min:'.format(
+                    'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} step_time:{}m{:.0f}s remain:{}m{:.0f}s'.format(
                         epoch + 1,
-                        self.args.epochs,
-                        step,
+                        self.config.epochs,
+                        step + 1,
                         self.iter_per_epoch,
                         loss.item(),
-                        self.optimizer.param_groups[-1]['lr'],
-                        spend_time / (step + 1) * self.iter_per_epoch // 60 - spend_time // 60))
+                        optimizer.param_groups[-1]['lr'],
+                        int(step_min), step_sec,
+                        int(remain_min), remain_sec),
+                    self.ddp
+                )
 
                 if self.writer is not None:
                     self.writer.add_scalar('Loss/train', loss.item(), epoch * self.iter_per_epoch + step)
