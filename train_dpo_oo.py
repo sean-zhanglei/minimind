@@ -43,7 +43,7 @@ class DPOConfig:
         self.parser.add_argument("--out_dir", type=str, default="out", help="输出目录")
         self.parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
         # self.parser.add_argument("--batch_size", type=int, default=8 , help="批次大小")
-        self.parser.add_argument("--batch_size", type=int, default=16 * 2 , help="批次大小")
+        self.parser.add_argument("--batch_size", type=int, default=8 * 2 , help="批次大小")
         self.parser.add_argument("--learning_rate", type=float, default=1e-8, 
                                help="学习率(建议1e-8以下避免遗忘)")
         self.parser.add_argument("--device", type=str, 
