@@ -183,14 +183,13 @@ class LoRATrainer:
                 self.logger.log(
                     'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.12f} step_time:{}m{:.0f}s remain:{}m{:.0f}s'.format(
                         epoch + 1,
-                        self.config.epochs,
+                        self.args.epochs,
                         step + 1,
                         self.iter_per_epoch,
                         loss.item(),
-                        optimizer.param_groups[-1]['lr'],
+                        self.optimizer.param_groups[-1]['lr'],
                         int(step_min), step_sec,
-                        int(remain_min), remain_sec),
-                    self.ddp
+                        int(remain_min), remain_sec)
                 )
 
                 if self.writer is not None:
