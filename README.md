@@ -1,4 +1,9 @@
 <div align="center">
+<h1> MiniMind-OO 面相对象版</h1>
+添加了一些日志，方便调试。
+wandb改成了tensorboard。
+</div>
+<div align="center">
 
 ![logo](./images/logo.png)
 
