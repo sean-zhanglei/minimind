@@ -199,14 +199,13 @@ class Trainer:
             Y = Y.to(self.config.device)
             loss_mask = loss_mask.to(self.config.device)
             
-            if step % self.config.log_interval == 0:
-                # 记录输入数据形状和大小
-                self.utils.log(
-                    f"Forward pass - Batch size: {X.size(0)}, "
-                    f"Sequence length: {X.size(1)}, "
-                    f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
-                    self.ddp
-                )
+            # 记录输入数据形状和大小
+            self.utils.log(
+                f"Forward pass - Batch size: {X.size(0)}, "
+                f"Sequence length: {X.size(1)}, "
+                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
+                self.ddp
+            )
             
             lr = self.utils.get_lr(
                 epoch * self.iter_per_epoch + step,
@@ -217,18 +216,7 @@ class Trainer:
                 param_group['lr'] = lr
 
             with ctx:
-                # 记录前向传播开始时间
-                forward_start = time.time()
                 res = model(X)
-                forward_time = time.time() - forward_start
-                
-                if step % self.config.log_interval == 0:
-                    # 记录前向传播耗时和输出形状
-                    self.utils.log(
-                        f"Forward pass completed - Time: {forward_time:.4f}s, "
-                        f"Logits shape: {res.logits.shape if hasattr(res, 'logits') else 'N/A'}",
-                        self.ddp
-                    )
                 loss = loss_fct(
                     res.logits.view(-1, res.logits.size(-1)),
                     Y.view(-1)

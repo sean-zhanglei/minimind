@@ -215,6 +215,13 @@ class DistillationTrainer:
             Y = Y.to(self.args.device)
             mask = mask.to(self.args.device)
             
+            # 记录输入数据形状和大小
+            self.logger.log(
+                f"Forward pass - Batch size: {X.size(0)}, "
+                f"Sequence length: {X.size(1)}, "
+                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}"
+            )
+            
             # 学习率调整
             lr = self._get_lr(epoch * self.iter_per_epoch + step, 
                              self.args.epochs * self.iter_per_epoch, 
@@ -257,9 +264,14 @@ class DistillationTrainer:
             # 日志记录
             if step % self.args.log_interval == 0:
                 spend_time = time.time() - start_time
+                step_time = time.time() - start_time - spend_time
+                remaining_steps = self.iter_per_epoch - step - 1
+                remaining_time = step_time * remaining_steps
                 self.logger.log(
-                    f'Epoch:[{epoch}/{self.args.epochs - 1}]({step}/{self.iter_per_epoch}) '
+                    f'Epoch:[{epoch + 1}/{self.args.epochs - 1}]({step + 1}/{self.iter_per_epoch}) '
                     f'loss:{loss.item():.4f} lr:{self.optimizer.param_groups[-1]["lr"]:.12f} '
+                    f'step_time:{step_time:.2f}s '
+                    f'remain:{remaining_time // 60:.0f}m{remaining_time % 60:.0f}s '
                     f'epoch_Time:{spend_time / (step + 1) * self.iter_per_epoch // 60 - spend_time // 60}min'
                 )
 
@@ -298,8 +310,18 @@ class DistillationTrainer:
     
     def train(self):
         """执行完整训练流程"""
-        for epoch in range(self.args.epochs):
-            self.train_epoch(epoch)
+        self.logger.log("train starting Main training loop...")
+        try:
+            for epoch in range(self.args.epochs):
+                self.train_epoch(epoch)
+            self.logger.log("Training completed successfully!", "SUCCESS")
+        except Exception as e:
+            self.logger.log(f"Training failed: {str(e)}", "ERROR")
+            if hasattr(self, 'writer'):
+                self.writer.close()
+            raise
+        
+        
 
 def init_distributed_mode(args):
     """初始化分布式训练"""
