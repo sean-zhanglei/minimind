@@ -52,8 +52,8 @@ class LoRAConfig:
         self.parser.add_argument('--n_layers', default=8, type=int)
         self.parser.add_argument('--max_seq_len', default=512, type=int)
         self.parser.add_argument('--use_moe', default=False, type=bool)
-        self.parser.add_argument("--data_path", type=str, default="./dataset/lora_identity.jsonl")
-        self.parser.add_argument("--lora_name", type=str, default="lora_identity", help="根据任务保存成lora_(英文/医学/心理...)")
+        self.parser.add_argument("--data_path", type=str, default="./dataset/lora_medical.jsonl")
+        self.parser.add_argument("--lora_name", type=str, default="lora_medical", help="根据任务保存成lora_(英文/医学/心理...)")
     
     def parse_args(self):
         args = self.parser.parse_args()
