@@ -42,7 +42,8 @@ class DPOConfig:
         # 训练参数
         self.parser.add_argument("--out_dir", type=str, default="out", help="输出目录")
         self.parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
-        self.parser.add_argument("--batch_size", type=int, default=8, help="批次大小")
+        # self.parser.add_argument("--batch_size", type=int, default=32 , help="批次大小")
+        self.parser.add_argument("--batch_size", type=int, default=32 * 2 , help="批次大小")
         self.parser.add_argument("--learning_rate", type=float, default=1e-8, 
                                help="学习率(建议1e-8以下避免遗忘)")
         self.parser.add_argument("--device", type=str, 
@@ -204,6 +205,13 @@ class DPOTrainer:
 
             # 前向传播和损失计算
             with self.ctx:
+                if step % self.args.log_interval == 0:
+                    self.logger.log(
+                        f"Forward pass - Batch size: {x.size(0)}, "
+                        f"Sequence length: {x.size(1)}, "
+                        f"Total elements: {x.numel() + y.numel() + mask.numel()}"
+                    )
+                
                 with torch.no_grad():
                     ref_outputs = self.ref_model(x)
                     ref_logits = ref_outputs.logits
@@ -230,9 +238,11 @@ class DPOTrainer:
             if step % self.args.log_interval == 0:
                 spend_time = time.time() - start_time
                 self.logger.log(
-                    f'Epoch:[{epoch + 1}/{self.args.epochs}]({step}/{self.iter_per_epoch}) '
+                    f'Epoch:[{epoch + 1}/{self.args.epochs}]({step + 1}/{self.iter_per_epoch}) '
                     f'loss:{loss.item():.3f} lr:{self.optimizer.param_groups[-1]["lr"]:.12f} '
-                    f'epoch_Time:{spend_time / (step + 1) * self.iter_per_epoch // 60 - spend_time // 60}min'
+                    f'step_time:{spend_time / (step + 1):.2f}s '
+                    f'epoch_Time:{spend_time / (step + 1) * self.iter_per_epoch // 60 - spend_time // 60}min '
+                    f'remaining:{((spend_time / (step + 1)) * (self.iter_per_epoch - step - 1)) // 60}min'
                 )
 
                 if self.writer is not None:
@@ -299,7 +309,7 @@ if __name__ == "__main__":
         rank = dist.get_rank()
         torch.manual_seed(base_seed + rank)
         torch.cuda.manual_seed(base_seed + rank)
-    
+
     # 创建并运行训练器
     trainer = DPOTrainer(args)
     trainer.train()
