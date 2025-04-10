@@ -276,8 +276,16 @@ class DPOTrainer:
     
     def train(self):
         """执行完整训练流程"""
-        for epoch in range(self.args.epochs):
-            self.train_epoch(epoch)
+        self.logger.log("train starting Main training loop...")
+        try:
+            for epoch in range(self.args.epochs):
+                self.train_epoch(epoch)
+            self.logger.log("Training completed successfully!", "SUCCESS")
+        except Exception as e:
+            self.logger.log(f"Training failed: {str(e)}", "ERROR")
+            if hasattr(self, 'writer'):
+                self.writer.close()
+            raise
 
 def init_distributed_mode(args):
     """初始化分布式训练"""
