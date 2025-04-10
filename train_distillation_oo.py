@@ -41,8 +41,9 @@ class DistillationConfig:
         """设置所有命令行参数"""
         # 训练参数
         self.parser.add_argument("--out_dir", type=str, default="out", help="输出目录")
-        self.parser.add_argument("--epochs", type=int, default=6, help="训练轮数")
-        self.parser.add_argument("--batch_size", type=int, default=32, help="批次大小")
+        self.parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
+        # self.parser.add_argument("--batch_size", type=int, default=8, help="批次大小")
+        self.parser.add_argument("--batch_size", type=int, default=8 * 2, help="批次大小")
         self.parser.add_argument("--learning_rate", type=float, default=5e-6, help="学习率")
         self.parser.add_argument("--device", type=str, 
                                default="cuda:0" if torch.cuda.is_available() else "cpu",
