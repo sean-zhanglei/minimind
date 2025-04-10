@@ -195,6 +195,12 @@ class DPOTrainer:
             x = torch.cat([x_chosen, x_rejected], dim=0)
             y = torch.cat([y_chosen, y_rejected], dim=0)
             mask = torch.cat([mask_chosen, mask_rejected], dim=0)
+            
+            self.logger.log(
+                    f"Forward pass - Batch size: {x.size(0)}, "
+                    f"Sequence length: {x.size(1)}, "
+                    f"Total elements: {x.numel() + y.numel() + mask.numel()}"
+                )
 
             # 学习率调整
             lr = self._get_lr(epoch * self.iter_per_epoch + step, 
@@ -205,12 +211,6 @@ class DPOTrainer:
 
             # 前向传播和损失计算
             with self.ctx:
-                if step % self.args.log_interval == 0:
-                    self.logger.log(
-                        f"Forward pass - Batch size: {x.size(0)}, "
-                        f"Sequence length: {x.size(1)}, "
-                        f"Total elements: {x.numel() + y.numel() + mask.numel()}"
-                    )
                 
                 with torch.no_grad():
                     ref_outputs = self.ref_model(x)
