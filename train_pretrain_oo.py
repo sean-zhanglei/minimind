@@ -184,50 +184,97 @@ class PretrainTrainer:
         self.iter_per_epoch = len(self.train_loader)
     
     def _setup_optimizer(self):
+        """初始化优化器和梯度缩放器
+        
+        1. 设置自动混合精度训练的梯度缩放器
+        2. 创建AdamW优化器
+        """
         self.logger.log("_setup_optimizer Initialize optimizer and scaler...")
         
+        # 初始化梯度缩放器(用于混合精度训练)
+        # 当使用float16或bfloat16精度时启用
         self.scaler = torch.cuda.amp.GradScaler(
             enabled=(self.config.dtype in ['float16', 'bfloat16'])
         )
+        
+        # 初始化AdamW优化器
+        # AdamW是Adam优化器的变体，修正了权重衰减的实现
         self.optimizer = optim.AdamW(
-            self.model.parameters(), 
-            lr=self.config.learning_rate
+            self.model.parameters(),  # 优化模型所有可训练参数
+            lr=self.config.learning_rate  # 使用配置中的学习率
         )
     
     def _get_lr(self, current_step: int) -> float:
+        """计算当前步数的学习率
         
+        实现学习率调度策略，包含warmup阶段和余弦退火阶段
+        
+        Args:
+            current_step: 当前训练步数
+            
+        Returns:
+            float: 计算得到的学习率值
+        """
+        # 计算总训练步数(epoch数 × 每epoch的迭代次数)
         total_steps = self.config.epochs * self.iter_per_epoch
+        # 获取warmup步数配置
         warmup_steps = self.config.warmup_iters
         
+        # Warmup阶段：线性增加学习率
         if current_step < warmup_steps:
             return self.config.learning_rate * current_step / warmup_steps
         
+        # 余弦退火阶段：使用余弦函数调整学习率
+        # 计算当前进度(0-1之间的值)
         progress = (current_step - warmup_steps) / (total_steps - warmup_steps)
+        # 应用余弦退火公式，最低学习率为初始学习率的10%
         return self.config.learning_rate * (0.1 + 0.5 * (1 + math.cos(math.pi * progress)))
     
     def _forward_pass(self, step, batch) -> torch.Tensor:
+        """执行前向传播计算损失
+        
+        Args:
+            step: 当前训练步数
+            batch: 包含输入数据、标签和损失掩码的元组
+            
+        Returns:
+            torch.Tensor: 计算得到的损失值(已考虑梯度累积)
+        """
+        # 解包批次数据: X是输入序列, Y是目标序列, loss_mask是损失掩码
         X, Y, loss_mask = batch
+        
+        # 定期记录输入数据的统计信息
         if step % self.config.log_interval == 0:
-            # 记录输入数据形状和大小
             self.logger.log(
-                f"Forward pass - Batch size: {X.size(0)}, "
-                f"Sequence length: {X.size(1)}, "
-                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",
+                f"Forward pass - Batch size: {X.size(0)}, "  # 批次大小
+                f"Sequence length: {X.size(1)}, "           # 序列长度
+                f"Total elements: {X.numel() + Y.numel() + loss_mask.numel()}",  # 总元素数
                 self.config.ddp
             )
         
+        # 将数据移动到指定设备(GPU/CPU)
         X = X.to(self.config.device)
         Y = Y.to(self.config.device)
         loss_mask = loss_mask.to(self.config.device)
         
+        # 使用自动混合精度上下文(如果启用)
         with self.ctx:
+            # 前向传播获取模型输出
             res = self.model(X)
+            
+            # 计算交叉熵损失(不进行归约)
             loss = nn.CrossEntropyLoss(reduction='none')(
-                res.logits.view(-1, res.logits.size(-1)),
-                Y.view(-1)
-            ).view(Y.size())
+                res.logits.view(-1, res.logits.size(-1)),  # 展平预测logits
+                Y.view(-1)                                 # 展平目标标签
+            ).view(Y.size())                               # 恢复原始形状
+            
+            # 应用损失掩码并计算平均损失
             loss = (loss * loss_mask).sum() / loss_mask.sum()
+            
+            # 添加辅助损失(如MoE中的专家负载平衡损失)
             loss += res.aux_loss
+            
+            # 返回损失值(考虑梯度累积步数)
             return loss / self.config.accumulation_steps
     
     def _save_checkpoint(self, epoch: int, step: int):
