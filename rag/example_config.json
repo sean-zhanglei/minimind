@@ -1,0 +1,14 @@
+{
+    "model_path": "MiniMind2",
+    "tokenizer_path": "MiniMind2",
+    "chunk_size": 1024,
+    "chunk_overlap": 50,
+    "top_k": 3,
+    "max_new_tokens": 150,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "repetition_penalty": 1.2,
+    "debug": true,
+    "log_level": "DEBUG",
+    "pdf_extract_mode": "text"
+}

@@ -7,3 +7,4 @@
 /.pytest_cache
 /logs
 /data
+__pycache__
